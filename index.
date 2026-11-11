@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giám sát khúc cua khuất tầm nhìn</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root{
+    --bg:#f4f6f8; --card:#ffffff; --text:#1d2733; --muted:#6b7a89; --line:#e2e8ee;
+    --ok:#1e9e5a; --warn:#e8a400; --danger:#d93636; --cA:#2563eb; --cB:#e8590c;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0f141a; --card:#18202a; --text:#e6edf3; --muted:#8b9aab; --line:#2a3541; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
+  header{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+  h1{font-size:18px;margin:0}
+  .conn{font-size:13px;display:flex;align-items:center;gap:6px;color:var(--muted)}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--danger)}
+  .dot.on{background:var(--ok)}
+  main{max-width:1000px;margin:0 auto;padding:16px;display:grid;gap:16px}
+
+  .banner{border-radius:14px;padding:22px;text-align:center;color:#fff;background:var(--ok);transition:background .3s}
+  .banner.A_ONLY,.banner.B_ONLY{background:var(--warn);color:#241a00}
+  .banner.BOTH{background:var(--danger)}
+  .banner.OFFLINE{background:#7b8794}
+  .banner .big{font-size:26px;font-weight:700}
+  .banner .sub{opacity:.9;margin-top:4px;font-size:14px}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}.grid4{grid-template-columns:1fr 1fr}}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .card h2{margin:0 0 10px;font-size:15px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+  .tag{font-size:12px;padding:2px 9px;border-radius:99px;background:var(--line);color:var(--muted)}
+  .tag.on{background:var(--ok);color:#fff}
+  .tag.hot{background:var(--danger);color:#fff}
+
+  .kv{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .kv div{background:var(--bg);border-radius:10px;padding:10px}
+  .kv small{display:block;color:var(--muted);font-size:12px}
+  .kv b{font-size:22px}
+  .sum{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+  .sum small{display:block;color:var(--muted);font-size:12px}
+  .sum b{font-size:26px}
+  .sum span{font-size:12px;color:var(--muted)}
+
+  .sign{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:14px}
+  .lamp{width:22px;height:22px;border-radius:50%;background:var(--line);border:2px solid var(--line)}
+  .lamp.on{background:#ffcc00;border-color:#ff9800;box-shadow:0 0 14px #ffb300;animation:blink 1s infinite}
+  @keyframes blink{50%{opacity:.45}}
+
+  canvas{width:100%;height:200px;display:block}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
+
+  .tablewrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  td.over{color:var(--danger);font-weight:600}
+
+  .tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+  button,input{font:inherit}
+  button{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:6px 12px;cursor:pointer}
+  button:hover{border-color:var(--muted)}
+  input[type=number]{width:70px;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:8px;padding:5px 8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Cảnh báo khúc cua khuất tầm nhìn</h1>
+  <div class="conn"><span class="dot" id="mqttDot"></span><span id="mqttTxt">Đang kết nối MQTT…</span></div>
+</header>
+
+<main>
+  <div class="banner OFFLINE" id="banner">
+    <div class="big" id="stateTxt">Chưa có dữ liệu</div>
+    <div class="sub" id="stateSub">Đang chờ bộ điều khiển…</div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Trạm A <span class="tag" id="tagA">offline</span></h2>
+      <div class="kv">
+        <div><small>Tốc độ hiện tại</small><b id="spdA">0</b> km/h</div>
+        <div><small>Khoảng cách</small><b id="distA">0</b> m</div>
+        <div><small>Xe đếm bởi trạm</small><b id="cntA">0</b></div>
+        <div><small>Tốc độ TB / Max</small><b id="avgA">–</b> / <b id="maxA">–</b></div>
+      </div>
+      <div class="sign"><span class="lamp" id="lampA"></span><span>Biển cảnh báo tại hướng A</span></div>
+    </div>
+    <div class="card">
+      <h2>Trạm B <span class="tag" id="tagB">offline</span></h2>
+      <div class="kv">
+        <div><small>Tốc độ hiện tại</small><b id="spdB">0</b> km/h</div>
+        <div><small>Khoảng cách</small><b id="distB">0</b> m</div>
+        <div><small>Xe đếm bởi trạm</small><b id="cntB">0</b></div>
+        <div><small>Tốc độ TB / Max</small><b id="avgB">–</b> / <b id="maxB">–</b></div>
+      </div>
+      <div class="sign"><span class="lamp" id="lampB"></span><span>Biển cảnh báo tại hướng B</span></div>
+    </div>
+  </div>
+
+  <div class="grid4">
+    <div class="sum"><small>Tổng số xe đã ghi</small><b id="sumTotal">0</b></div>
+    <div class="sum"><small>Tốc độ trung bình</small><b id="sumAvg">–</b> <span>km/h</span></div>
+    <div class="sum"><small>Tốc độ cao nhất</small><b id="sumMax">–</b> <span>km/h</span></div>
+    <div class="sum"><small>Xe vượt ngưỡng</small><b id="sumOver">0</b> <span id="sumOverPct"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>
+      Tốc độ từng phương tiện (40 xe gần nhất)
+      <span class="tools">
+        Ngưỡng <input type="number" id="limit" min="5" max="200" value="30"> km/h
+        <button id="csvBtn">Xuất CSV</button>
+        <button id="clearBtn">Xóa thống kê</button>
+      </span>
+    </h2>
+    <div class="legend">
+      <span><i style="background:var(--cA)"></i>Hướng A</span>
+      <span><i style="background:var(--cB)"></i>Hướng B</span>
+      <span><i style="background:var(--danger);height:2px;margin-bottom:3px"></i>Ngưỡng</span>
+    </div>
+    <canvas id="chartSpeed"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Lưu lượng theo giờ (12 giờ gần nhất)</h2>
+    <div class="legend">
+      <span><i style="background:var(--cA)"></i>Hướng A</span>
+      <span><i style="background:var(--cB)"></i>Hướng B</span>
+    </div>
+    <canvas id="chartFlow"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Phương tiện gần đây</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Thời gian</th><th>Hướng</th><th>Tốc độ đỉnh</th><th>Số xe (trạm)</th></tr></thead>
+        <tbody id="log"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+/* ================= CẤU HÌNH ================= */
+const BROKER      = "wss://broker.hivemq.com:8884/mqtt";
+const TOPIC_STATE = "iot677/khuccua01/state";
+const TOPIC_EVENT = "iot677/khuccua01/event";
+const MAX_EVENTS  = 2000;
+const STORE_KEY   = "khuccua01_events";
+const LIMIT_KEY   = "khuccua01_limit";
+
+/* ================= TIỆN ÍCH ================= */
+const $ = id => document.getElementById(id);
+
+function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function loadJSON(key, fallback){
+  try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; }
+  catch(e){ return fallback; }
+}
+function saveJSON(key, val){
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){}
+}
+
+let events = loadJSON(STORE_KEY, []);
+if (!Array.isArray(events)) events = [];
+let limit = Number(loadJSON(LIMIT_KEY, 30)) || 30;
+let lastStateAt = 0;
+
+$("limit").value = limit;
+
+/* ================= MQTT ================= */
+const client = mqtt.connect(BROKER, {
+  reconnectPeriod: 3000,
+  connectTimeout: 10000,
+  clientId: "web_" + Math.random().toString(16).slice(2, 10)
+});
+
+client.on("connect", () => {
+  $("mqttDot").classList.add("on");
+  $("mqttTxt").textContent = "MQTT đã kết nối";
+  client.subscribe([TOPIC_STATE, TOPIC_EVENT]);
+});
+client.on("reconnect", () => { $("mqttTxt").textContent = "Đang kết nối lại MQTT…"; });
+client.on("close", () => {
+  $("mqttDot").classList.remove("on");
+  $("mqttTxt").textContent = "Mất kết nối MQTT, đang thử lại…";
+});
+client.on("error", () => {});
+
+client.on("message", (topic, payload) => {
+  let d;
+  try { d = JSON.parse(payload.toString()); } catch(e){ return; }
+  if (!d || typeof d !== "object") return;
+  try {
+    if (topic === TOPIC_STATE) renderState(d);
+    else if (topic === TOPIC_EVENT) addEvent(d);
+  } catch(e){ console.warn(e); }
+});
+
+/* ================= TRẠNG THÁI ================= */
+const TEXT = {
+  IDLE:   ["Đường thông thoáng", "Không có phương tiện – biển cảnh báo tắt"],
+  A_ONLY: ["Có xe đang đến từ hướng A", "Biển cảnh báo tại hướng B đang bật"],
+  B_ONLY: ["Có xe đang đến từ hướng B", "Biển cảnh báo tại hướng A đang bật"],
+  BOTH:   ["Có xe từ cả hai hướng!", "Cả hai biển cảnh báo đang bật"]
+};
+
+function num(v){ const n = Number(v); return Number.isFinite(n) ? n : 0; }
+
+function renderNode(k, n){
+  n = n || {};
+  const on = !!n.on, p = !!n.p;
+  $("spd"+k).textContent  = p ? num(n.spd) : 0;
+  $("dist"+k).textContent = p ? num(n.dist) : 0;
+  $("cnt"+k).textContent  = num(n.cnt);
+  const tag = $("tag"+k);
+  tag.className = "tag" + (on ? (p ? " hot" : " on") : "");
+  tag.textContent = !on ? "offline" : (p ? "có xe" : "online");
+}
+
+function renderState(d){
+  if (!TEXT[d.state]) return;
+  lastStateAt = Date.now();
+  $("banner").className = "banner " + d.state;
+  $("stateTxt").textContent = TEXT[d.state][0];
+  $("stateSub").textContent = TEXT[d.state][1];
+  renderNode("A", d.a);
+  renderNode("B", d.b);
+  $("lampA").classList.toggle("on", !!d.signA);
+  $("lampB").classList.toggle("on", !!d.signB);
+}
+
+/* ================= SỰ KIỆN XE ================= */
+function addEvent(e){
+  // Broker công cộng: chỉ nhận dữ liệu hợp lệ
+  if (e.n !== "A" && e.n !== "B") return;
+  const spd = Number(e.spd), cnt = Number(e.cnt);
+  if (!Number.isFinite(spd) || spd < 0 || spd > 250) return;
+  if (!Number.isFinite(cnt) || cnt < 0) return;
+
+  const now = Date.now();
+  // Loại bản tin trùng (cùng trạm, cùng số xe, cùng tốc độ trong 30 giây)
+  for (let i = events.length - 1; i >= 0 && now - events[i].t < 30000; i--) {
+    const x = events[i];
+    if (x.n === e.n && x.cnt === cnt && x.spd === spd) return;
+  }
+
+  events.push({ t: now, n: e.n, spd: Math.round(spd), cnt: Math.round(cnt) });
+  if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
+  saveJSON(STORE_KEY, events);
+  renderStats();
+}
+
+function fmtTime(t){
+  const d = new Date(t);
+  return d.toLocaleDateString("vi-VN") + " " + d.toLocaleTimeString("vi-VN");
+}
+
+/* ================= THỐNG KÊ ================= */
+function renderStats(){
+  // Theo từng hướng
+  for (const k of ["A","B"]){
+    const list = events.filter(e => e.n === k);
+    if (list.length){
+      const avg = list.reduce((s,e) => s + e.spd, 0) / list.length;
+      $("avg"+k).textContent = avg.toFixed(0);
+      $("max"+k).textContent = Math.max(...list.map(e => e.spd));
+    } else {
+      $("avg"+k).textContent = "–";
+      $("max"+k).textContent = "–";
+    }
+  }
+
+  // Tổng hợp
+  const total = events.length;
+  $("sumTotal").textContent = total;
+  if (total){
+    const avg = events.reduce((s,e) => s + e.spd, 0) / total;
+    const mx = Math.max(...events.map(e => e.spd));
+    const over = events.filter(e => e.spd >= limit).length;
+    $("sumAvg").textContent = avg.toFixed(1);
+    $("sumMax").textContent = mx;
+    $("sumOver").textContent = over;
+    $("sumOverPct").textContent = "(" + (over * 100 / total).toFixed(0) + "%)";
+  } else {
+    $("sumAvg").textContent = "–";
+    $("sumMax").textContent = "–";
+    $("sumOver").textContent = 0;
+    $("sumOverPct").textContent = "";
+  }
+
+  // Bảng
+  const rows = events.slice(-12).reverse().map(e =>
+    `<tr><td>${fmtTime(e.t)}</td><td>Hướng ${e.n}</td>` +
+    `<td class="${e.spd >= limit ? "over" : ""}">${e.spd} km/h</td><td>${e.cnt}</td></tr>`
+  ).join("");
+  $("log").innerHTML = rows || `<tr><td colspan="4" style="color:var(--muted)">Chưa có dữ liệu</td></tr>`;
+
+  drawSpeedChart();
+  drawFlowChart();
+}
+
+/* ================= BIỂU ĐỒ ================= */
+function prepCanvas(c){
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = Math.round(w * dpr);
+  c.height = Math.round(h * dpr);
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawGrid(ctx, w, h, padL, padB, maxV){
+  const line = cssVar("--line"), muted = cssVar("--muted");
+  ctx.strokeStyle = line; ctx.fillStyle = muted; ctx.font = "11px system-ui,sans-serif";
+  ctx.lineWidth = 1;
+  const top = 8, bottom = h - padB;
+  for (let i = 0; i <= 4; i++){
+    const y = top + (bottom - top) * i / 4;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - 4, y); ctx.stroke();
+    ctx.fillText(Math.round(maxV * (1 - i / 4)), 2, y + 4);
+  }
+  return { top, bottom };
+}
+
+function drawSpeedChart(){
+  const { ctx, w, h } = prepCanvas($("chartSpeed"));
+  const data = events.slice(-40);
+  const maxV = Math.max(60, limit + 10, ...data.map(e => e.spd)) + 10;
+  const padL = 30, padB = 18;
+  const { top, bottom } = drawGrid(ctx, w, h, padL, padB, maxV);
+  if (!data.length){
+    ctx.fillStyle = cssVar("--muted");
+    ctx.fillText("Chưa có dữ liệu", padL + 10, h / 2);
+    return;
+  }
+  const step = (w - padL - 6) / data.length;
+  const bw = Math.max(3, Math.min(20, step - 3));
+  const cA = cssVar("--cA"), cB = cssVar("--cB");
+  data.forEach((e, i) => {
+    const bh = (bottom - top) * e.spd / maxV;
+    ctx.fillStyle = e.n === "A" ? cA : cB;
+    ctx.fillRect(padL + i * step + (step - bw) / 2, bottom - bh, bw, bh);
+  });
+  // Đường ngưỡng
+  const yL = bottom - (bottom - top) * limit / maxV;
+  ctx.strokeStyle = cssVar("--danger"); ctx.setLineDash([5, 4]);
+  ctx.beginPath(); ctx.moveTo(padL, yL); ctx.lineTo(w - 4, yL); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawFlowChart(){
+  const { ctx, w, h } = prepCanvas($("chartFlow"));
+  const HOURS = 12;
+  const hourMs = 3600000;
+  const nowH = Math.floor(Date.now() / hourMs) * hourMs;
+  const buckets = [];
+  for (let i = HOURS - 1; i >= 0; i--) buckets.push({ start: nowH - i * hourMs, A: 0, B: 0 });
+  for (const e of events){
+    const idx = Math.floor((e.t - buckets[0].start) / hourMs);
+    if (idx >= 0 && idx < HOURS) buckets[idx][e.n]++;
+  }
+  const maxCount = Math.max(...buckets.map(b => b.A + b.B));
+  const maxV = Math.max(4, Math.ceil(maxCount / 4) * 4);
+  const padL = 30, padB = 22;
+  const { top, bottom } = drawGrid(ctx, w, h, padL, padB, maxV);
+
+  const step = (w - padL - 6) / HOURS;
+  const bw = Math.max(6, Math.min(36, step - 8));
+  const cA = cssVar("--cA"), cB = cssVar("--cB"), muted = cssVar("--muted");
+  buckets.forEach((b, i) => {
+    const x = padL + i * step + (step - bw) / 2;
+    const hA = (bottom - top) * b.A / maxV;
+    const hB = (bottom - top) * b.B / maxV;
+    ctx.fillStyle = cA; ctx.fillRect(x, bottom - hA, bw, hA);
+    ctx.fillStyle = cB; ctx.fillRect(x, bottom - hA - hB, bw, hB);
+    ctx.fillStyle = muted; ctx.font = "11px system-ui,sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(new Date(b.start).getHours() + "h", x + bw / 2, h - 6);
+    if (b.A + b.B > 0) ctx.fillText(String(b.A + b.B), x + bw / 2, bottom - hA - hB - 3);
+    ctx.textAlign = "start";
+  });
+}
+
+/* ================= NÚT & SỰ KIỆN ================= */
+$("limit").addEventListener("change", () => {
+  const v = Number($("limit").value);
+  if (Number.isFinite(v) && v >= 5 && v <= 200){
+    limit = v;
+    saveJSON(LIMIT_KEY, v);
+    renderStats();
+  } else {
+    $("limit").value = limit;
+  }
+});
+
+$("clearBtn").onclick = () => {
+  if (!confirm("Xóa toàn bộ thống kê đã lưu trên trình duyệt này?")) return;
+  events = [];
+  saveJSON(STORE_KEY, events);
+  renderStats();
+};
+
+$("csvBtn").onclick = () => {
+  if (!events.length){ alert("Chưa có dữ liệu để xuất."); return; }
+  const lines = ["thoi_gian,huong,toc_do_kmh,so_xe_tram"];
+  for (const e of events){
+    lines.push([new Date(e.t).toISOString(), e.n, e.spd, e.cnt].join(","));
+  }
+  const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "thong_ke_khuc_cua.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
+// Mất tín hiệu từ ESP3
+setInterval(() => {
+  if (lastStateAt && Date.now() - lastStateAt > 10000){
+    $("banner").className = "banner OFFLINE";
+    $("stateTxt").textContent = "Bộ điều khiển mất kết nối";
+    $("stateSub").textContent = "Không nhận được dữ liệu từ ESP3 trong 10 giây";
+    $("lampA").classList.remove("on");
+    $("lampB").classList.remove("on");
+  }
+}, 2000);
+
+// Cập nhật biểu đồ lưu lượng khi sang giờ mới
+setInterval(drawFlowChart, 60000);
+window.addEventListener("resize", () => { drawSpeedChart(); drawFlowChart(); });
+
+renderStats();
+</script>
+</body>
+</html>
